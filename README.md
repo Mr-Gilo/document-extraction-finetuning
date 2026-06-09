@@ -16,9 +16,13 @@ of model parameters while achieving strong task-specific performance,
 making fine-tuning feasible on consumer hardware.
 
 Base Model Weights (frozen)
+
 +
+
 LoRA Adapter Weights (trainable, ~0.5% of params)
+
 =
+
 Fine-tuned behaviour on target task
 
 ## Extraction Schema
@@ -35,16 +39,6 @@ All domains share a unified extraction schema:
 | summary | One-sentence description |
 | action_required | Recommended or taken action |
 
-## Project Structure
-
-document-extraction-finetuning/
-├── config.py          Model, LoRA, and training configuration
-├── data_generator.py  Synthetic multi-domain report generator
-├── train.py           LoRA fine-tuning with PEFT + SFTTrainer
-├── evaluate.py        Before vs after accuracy comparison
-├── inference.py       Demo inference on new reports
-├── requirements.txt
-└── README.md
 
 ## Setup
 
@@ -72,20 +66,6 @@ python evaluate.py
 # Step 4: Demo inference on new reports
 python inference.py
 ```
-
-## Results
-
-After 3 epochs of LoRA fine-tuning on 300 examples:
-
-| Field | Before | After | Improvement |
-|-------|--------|-------|-------------|
-| incident_type | ~15% | ~75% | +60% |
-| date_reported | ~20% | ~85% | +65% |
-| severity | ~25% | ~80% | +55% |
-| action_required | ~10% | ~65% | +55% |
-| Valid JSON rate | ~10% | ~80% | +70% |
-
-*Results on distilgpt2. Larger models (TinyLlama, Phi-3) achieve higher accuracy.*
 
 ## Scaling to Larger Models
 
