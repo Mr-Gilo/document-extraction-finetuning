@@ -2,8 +2,10 @@
 LoRA Fine-tuning for Document Information Extraction
 
 Uses Parameter-Efficient Fine-Tuning (PEFT) with LoRA adapters,
-training only ~0.5% of model parameters while achieving strong
+training only ~0.18% of model parameters while achieving strong
 performance improvements on the extraction task.
+
+Uses standard HuggingFace Trainer for maximum compatibility.
 """
 
 import json
@@ -13,11 +15,11 @@ from transformers import (
     AutoTokenizer,
     AutoModelForCausalLM,
     TrainingArguments,
+    Trainer,
     DataCollatorForLanguageModeling
 )
 from peft import LoraConfig, get_peft_model, TaskType
 from datasets import Dataset
-from trl import SFTTrainer
 from config import MODEL_NAME, LORA_CONFIG, TRAINING_CONFIG, DATA_CONFIG
 from data_generator import save_dataset
 
@@ -37,11 +39,10 @@ def setup_model_and_tokenizer():
 
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
-        torch_dtype=torch.float32,  # float32 for CPU stability
+        dtype=torch.float32,
         device_map="auto"
     )
 
-    # Apply LoRA configuration
     lora_config = LoraConfig(
         r=LORA_CONFIG["r"],
         lora_alpha=LORA_CONFIG["lora_alpha"],
@@ -53,7 +54,6 @@ def setup_model_and_tokenizer():
 
     model = get_peft_model(model, lora_config)
 
-    # Report trainable parameters
     trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
     total = sum(p.numel() for p in model.parameters())
     print(f"Trainable parameters: {trainable:,} / {total:,} "
@@ -62,13 +62,21 @@ def setup_model_and_tokenizer():
     return model, tokenizer
 
 
-def prepare_dataset(examples, tokenizer):
-    """Convert examples to HuggingFace Dataset."""
-    return Dataset.from_dict({"text": [ex["prompt"] for ex in examples]})
+def tokenize_dataset(examples, tokenizer, max_length):
+    """Tokenize prompts for causal language model training."""
+    tokenized = tokenizer(
+        examples["text"],
+        truncation=True,
+        max_length=max_length,
+        padding="max_length",
+        return_tensors=None
+    )
+    # For causal LM, labels are the same as input_ids
+    tokenized["labels"] = tokenized["input_ids"].copy()
+    return tokenized
 
 
 def train():
-    # Generate data if not already done
     train_path = os.path.join(DATA_CONFIG["data_dir"], "train.jsonl")
     if not os.path.exists(train_path):
         print("Generating dataset...")
@@ -78,7 +86,26 @@ def train():
     print(f"Loaded {len(train_examples)} training examples")
 
     model, tokenizer = setup_model_and_tokenizer()
-    train_dataset = prepare_dataset(train_examples, tokenizer)
+
+    # Build dataset
+    raw_dataset = Dataset.from_dict({
+        "text": [ex["prompt"] for ex in train_examples]
+    })
+
+    # Tokenize
+    tokenized_dataset = raw_dataset.map(
+        lambda x: tokenize_dataset(x, tokenizer,
+                                   TRAINING_CONFIG["max_seq_length"]),
+        batched=True,
+        remove_columns=["text"]
+    )
+    tokenized_dataset.set_format("torch")
+
+    # Data collator for causal LM
+    data_collator = DataCollatorForLanguageModeling(
+        tokenizer=tokenizer,
+        mlm=False
+    )
 
     training_args = TrainingArguments(
         output_dir=TRAINING_CONFIG["output_dir"],
@@ -89,19 +116,17 @@ def train():
         warmup_steps=TRAINING_CONFIG["warmup_steps"],
         logging_steps=TRAINING_CONFIG["logging_steps"],
         save_steps=TRAINING_CONFIG["save_steps"],
-        fp16=False,          # CPU training requires fp16=False
+        fp16=False,
         report_to="none",
         dataloader_num_workers=0,
+        remove_unused_columns=False,
     )
 
-    trainer = SFTTrainer(
+    trainer = Trainer(
         model=model,
         args=training_args,
-        train_dataset=train_dataset,
-        tokenizer=tokenizer,
-        max_seq_length=TRAINING_CONFIG["max_seq_length"],
-        dataset_text_field="text",
-        packing=False,
+        train_dataset=tokenized_dataset,
+        data_collator=data_collator,
     )
 
     print("\nStarting LoRA fine-tuning...")
@@ -112,7 +137,7 @@ def train():
 
     trainer.train()
 
-    # Save LoRA adapter weights only (not full model)
+    # Save LoRA adapter weights only
     adapter_path = os.path.join(TRAINING_CONFIG["output_dir"], "lora_adapter")
     model.save_pretrained(adapter_path)
     tokenizer.save_pretrained(adapter_path)
