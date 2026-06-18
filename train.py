@@ -6,6 +6,9 @@ training only ~0.18% of model parameters while achieving strong
 performance improvements on the extraction task.
 
 Uses standard HuggingFace Trainer for maximum compatibility.
+
+Uses masked label training: loss is computed ONLY on the JSON output tokens,
+not the input prompt. This focuses learning on generating correct extractions.
 """
 
 import json
@@ -62,18 +65,61 @@ def setup_model_and_tokenizer():
     return model, tokenizer
 
 
-def tokenize_dataset(examples, tokenizer, max_length):
-    """Tokenize prompts for causal language model training."""
-    tokenized = tokenizer(
-        examples["text"],
-        truncation=True,
-        max_length=max_length,
-        padding="max_length",
-        return_tensors=None
-    )
-    # For causal LM, labels are the same as input_ids
-    tokenized["labels"] = tokenized["input_ids"].copy()
-    return tokenized
+def tokenize_with_masked_labels(examples, tokenizer, max_length):
+    """
+    Tokenize with masked labels for instruction fine-tuning.
+    Labels are set to -100 for prompt tokens (ignored in loss).
+    Only the JSON output tokens contribute to the loss.
+    This focuses the model on learning to generate correct extractions.
+    """
+    all_input_ids = []
+    all_attention_masks = []
+    all_labels = []
+
+    for text in examples["text"]:
+        # Split prompt from JSON response
+        if "JSON:" in text:
+            prompt_part = text.split("JSON:")[0] + "JSON:"
+            json_part = text.split("JSON:", 1)[1].strip()
+        else:
+            prompt_part = text
+            json_part = ""
+
+        # Tokenize prompt to find its length
+        prompt_tokens = tokenizer(
+            prompt_part,
+            add_special_tokens=True,
+            return_tensors=None
+        )
+        prompt_len = len(prompt_tokens["input_ids"])
+
+        # Tokenize full sequence (prompt + JSON response)
+        full_tokens = tokenizer(
+            text,
+            truncation=True,
+            max_length=max_length,
+            padding="max_length",
+            return_tensors=None
+        )
+
+        input_ids = full_tokens["input_ids"]
+        attention_mask = full_tokens["attention_mask"]
+
+        # Mask prompt tokens in labels (-100 = ignored by loss function)
+        labels = input_ids.copy()
+        mask_len = min(prompt_len, len(labels))
+        for i in range(mask_len):
+            labels[i] = -100
+
+        all_input_ids.append(input_ids)
+        all_attention_masks.append(attention_mask)
+        all_labels.append(labels)
+
+    return {
+        "input_ids": all_input_ids,
+        "attention_mask": all_attention_masks,
+        "labels": all_labels
+    }
 
 
 def train():
@@ -87,35 +133,36 @@ def train():
 
     model, tokenizer = setup_model_and_tokenizer()
 
-    # Build dataset
     raw_dataset = Dataset.from_dict({
         "text": [ex["prompt"] for ex in train_examples]
     })
 
-    # Tokenize
+    print("Tokenising with masked labels (prompt tokens excluded from loss)...")
     tokenized_dataset = raw_dataset.map(
-        lambda x: tokenize_dataset(x, tokenizer,
-                                   TRAINING_CONFIG["max_seq_length"]),
+        lambda x: tokenize_with_masked_labels(
+            x, tokenizer, TRAINING_CONFIG["max_seq_length"]
+        ),
         batched=True,
         remove_columns=["text"]
     )
     tokenized_dataset.set_format("torch")
 
-    # Data collator for causal LM
-    data_collator = DataCollatorForLanguageModeling(
-        tokenizer=tokenizer,
-        mlm=False
-    )
+    # Verify masking worked
+    sample_labels = tokenized_dataset[0]["labels"].tolist()
+    n_masked = sum(1 for l in sample_labels if l == -100)
+    n_active = sum(1 for l in sample_labels if l != -100)
+    print(f"Label check — masked (prompt): {n_masked}, "
+          f"active (JSON output): {n_active}")
 
     training_args = TrainingArguments(
         output_dir=TRAINING_CONFIG["output_dir"],
-        num_train_epochs=TRAINING_CONFIG["num_train_epochs"],
+        num_train_epochs=10,          # More epochs with focused loss
         per_device_train_batch_size=TRAINING_CONFIG["per_device_train_batch_size"],
         gradient_accumulation_steps=TRAINING_CONFIG["gradient_accumulation_steps"],
         learning_rate=TRAINING_CONFIG["learning_rate"],
         warmup_steps=TRAINING_CONFIG["warmup_steps"],
         logging_steps=TRAINING_CONFIG["logging_steps"],
-        save_steps=TRAINING_CONFIG["save_steps"],
+        save_steps=500,
         fp16=False,
         report_to="none",
         dataloader_num_workers=0,
@@ -126,18 +173,20 @@ def train():
         model=model,
         args=training_args,
         train_dataset=tokenized_dataset,
-        data_collator=data_collator,
+        data_collator=lambda data: {
+            "input_ids": torch.stack([d["input_ids"] for d in data]),
+            "attention_mask": torch.stack([d["attention_mask"] for d in data]),
+            "labels": torch.stack([d["labels"] for d in data]),
+        },
     )
 
-    print("\nStarting LoRA fine-tuning...")
+    print("\nStarting LoRA fine-tuning with masked labels...")
     print(f"Model: {MODEL_NAME}")
     print(f"LoRA rank: {LORA_CONFIG['r']}, alpha: {LORA_CONFIG['lora_alpha']}")
-    print(f"Epochs: {TRAINING_CONFIG['num_train_epochs']}, "
-          f"Batch size: {TRAINING_CONFIG['per_device_train_batch_size']}\n")
+    print(f"Epochs: 10 (focused on JSON output tokens only)\n")
 
     trainer.train()
 
-    # Save LoRA adapter weights only
     adapter_path = os.path.join(TRAINING_CONFIG["output_dir"], "lora_adapter")
     model.save_pretrained(adapter_path)
     tokenizer.save_pretrained(adapter_path)

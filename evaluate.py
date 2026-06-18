@@ -39,7 +39,7 @@ def extract_json_from_output(text):
 
 
 def generate_extraction(model, tokenizer, report_text, max_new_tokens=150):
-    """Generate extraction for a single report."""
+    """Generate extraction — decode only newly generated tokens."""
     prompt = format_prompt(report_text)
     inputs = tokenizer(
         prompt,
@@ -47,6 +47,8 @@ def generate_extraction(model, tokenizer, report_text, max_new_tokens=150):
         truncation=True,
         max_length=TRAINING_CONFIG["max_seq_length"]
     )
+
+    input_length = inputs["input_ids"].shape[1]
 
     with torch.no_grad():
         outputs = model.generate(
@@ -58,9 +60,10 @@ def generate_extraction(model, tokenizer, report_text, max_new_tokens=150):
             eos_token_id=tokenizer.eos_token_id,
         )
 
-    generated = tokenizer.decode(outputs[0], skip_special_tokens=True)
+    # Decode ONLY the new tokens, not the prompt
+    new_tokens = outputs[0][input_length:]
+    generated = tokenizer.decode(new_tokens, skip_special_tokens=True)
     return extract_json_from_output(generated)
-
 
 def compute_field_accuracy(predicted, ground_truth):
     """Compute per-field extraction accuracy."""

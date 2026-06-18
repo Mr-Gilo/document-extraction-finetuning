@@ -1,0 +1,26 @@
+{
+  "before": {
+    "label": "Base model (no fine-tuning)",
+    "valid_json_rate": 0.0,
+    "field_accuracy": {
+      "incident_type": 0.0,
+      "date_reported": 0.0,
+      "location": 0.0,
+      "severity": 0.0,
+      "action_required": 0.0
+    },
+    "avg_accuracy": 0.0
+  },
+  "after": {
+    "label": "Fine-tuned model (LoRA)",
+    "valid_json_rate": 13.3,
+    "field_accuracy": {
+      "incident_type": 12.9,
+      "date_reported": 10.0,
+      "location": 7.2,
+      "severity": 3.3,
+      "action_required": 3.3
+    },
+    "avg_accuracy": 7.3
+  }
+}
