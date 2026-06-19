@@ -33,7 +33,7 @@ for i, ex in enumerate(test_examples):
             **inputs,
             max_new_tokens=200,
             do_sample=False,
-            pad_token_id=tokenizer.eos_token_id,
+            pad_token_id=tokenizer.eos_token_id, repetition_penalty=1.3,
         )
 
     # Decode only new tokens

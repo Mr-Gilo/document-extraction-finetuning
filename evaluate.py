@@ -57,7 +57,7 @@ def generate_extraction(model, tokenizer, report_text, max_new_tokens=150):
             do_sample=False,
             temperature=1.0,
             pad_token_id=tokenizer.eos_token_id,
-            eos_token_id=tokenizer.eos_token_id,
+            eos_token_id=tokenizer.eos_token_id, repetition_penalty=1.3,
         )
 
     # Decode ONLY the new tokens, not the prompt
